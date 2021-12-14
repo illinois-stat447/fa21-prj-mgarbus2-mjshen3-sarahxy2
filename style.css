@@ -1,0 +1,34 @@
+.cover {
+  object-fit: cover;
+}
+slides>slide.title-slide {
+    background-image: url('images/theme.png');
+    
+    object-fit: cover;
+}
+slides > slide.title-slide p {
+  color: white;
+  text-align: left;
+}
+slides > slide p {
+  color: black;
+}
+
+slides > slide body {
+  color: black;
+}
+
+slides > slide ul {
+  color: black;
+}
+
+slides > slide il {
+  color: black;
+}
+slides > slide.title-slide h1 {
+  color: white;
+<<<<<<< Updated upstream
+}
+=======
+}
+>>>>>>> Stashed changes

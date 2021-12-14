@@ -1,0 +1,478 @@
+---
+title: 'Learning to Rest: Predicting Sleep from Fitness'
+author: "Michael Garbus, Michelle Shen, Sarah Yang - STAGES cohort investigator group"
+output:
+  beamer_presentation: default
+  ioslides_presentation:
+    css: style.css
+    transition: 0
+    widescreen: yes
+---
+<style type="text/css">
+h2 {
+  text-align: left;
+  position: flex;
+ 
+}
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, message = F, warning = FALSE, echo = FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(vtable)
+library(curl)
+library(fastDummies)
+library(glmnet)
+library(tidyr)
+```
+
+
+```{r, warning = FALSE, cache=FALSE, echo = FALSE, output = FALSE,message=FALSE,echo=FALSE, results='hide'}
+
+#Prepare data
+sleep_data_full <- fread('/cloud/project/fa21-prj-mgarbus2-mjshen3-sarahxy2/datasets/stages-dataset-0.1.0.csv')
+sleep_data <- sleep_data_full[,-c(1,2)]
+suppressMessages(SRDBVars <- read_excel('/cloud/project/fa21-prj-mgarbus2-mjshen3-sarahxy2/datasets/STAGESPSGKeySRBDVariables2020-08-29 Deidentified.xlsx'))
+SRDBVars<- SRDBVars[,c(2,15,18,19)]
+
+#Convert sleep time
+SRDBVars$sleep_time <- (SRDBVars$sleep_time)/60
+```
+
+```{r, echo = FALSE}
+
+
+#Remove those who are pregnant (2 women)
+sleep_data <- sleep_data[-which(sleep_data[,c('mdhx_1200')] == 1),]
+
+#select fitness data
+
+fitness_data <- sleep_data[,c('subject_code','dem_0500','dem_0800','fss_1000',
+                              'gad_0800','phq_1000','nose_0300',
+                              'nose_0500','diet_0340','diet_0400',
+                              'diet_0700','soclhx_0501',
+                              'soclhx_0700','soclhx_0900','soclhx_1500',
+                              'famhx_0700','ess_0900','narc_1600')]
+
+
+data_dictionary <- fread('/cloud/project/fa21-prj-mgarbus2-mjshen3-sarahxy2/datasets/stages-data-dictionary-0.1.0-variables.csv')
+
+#select columns
+row_dict_vals <- which(data_dictionary$id %in% colnames(fitness_data))
+
+#Load data dictionary and make a table of our variables.
+
+display_kable <- kable(data_dictionary[row_dict_vals,c('id','display_name')])
+
+```
+
+
+
+
+## Project Overview {data-background="images/slide_1.png" data-background-size=contain}
+
+<br>
+
+- Chose to pursue dataset from STAGES - Stanford Technology, Analytics, and Genomics in Sleep
+- Interested in what can predict a “good sleeper” from fitness, health ailments, demographics, etc.
+- This project demonstrates our skills with:
+  * Data Cleaning and Filtering
+  * Data Wrangling with data.table
+  * Visualizations in R with ggplot2
+  * Predictive analytics with modeling
+
+## Finding and Getting Data {data-background="images/slide_2.png"}
+
+<br>
+
+- Group interest in sleep patterns and factors determining good/healthy sleep
+- Data was available upon request from sleepdata.org
+  * 20 data collection sites from 6 centers - Cross-sectional, multi-site study that has collected data on 1,500 adult/adolescent patients evaluated for sleep disorders
+    + Stanford University, Bogan Sleep Consulting, Geisinger Health, Mayo Clinic, MedSleep, St. Luke's Hospital
+    
+- Challenges with data collection
+  * Obscure variable names or a lot of missing data
+  * Many variables were not relevant and therefore cut
+
+
+## Data Cleaning {data-background="images/slide_generic.png"}
+
+<br>
+
+- Deleted insignificant/irrelevant variables to result in 17 predictors, subject id, and subject code
+  * Originally 445 variables
+  * Predictors included BMI, participant’s sex, questionnaire results, fitness-related qualities, issues breathing, substance consumption, etc.
+
+- Categorical variables were dummy-coded for easy use in regression analysis
+- NA’s were replaced with 0’s, imputed, or the row was deleted
+- Outliers without rational explanation were deleted from data
+
+
+## Understanding Data {data-background="images/slide_generic.png"}
+
+<br>
+
+- A total of 18 varibles are used as fitness indicator
+- *On the next two slides* are the 17 variables (sleep_time not shown here) that we’ve identified from surveys and tests to be the most important fitness variables affecting quality of sleep.
+
+## Understanding Data Table 1 {data-background="images/slide_generic.png"}
+
+<br>
+
+```{r}
+options("kableExtra.html.bsTable" = T)
+kable(data_dictionary[row_dict_vals,c('id','display_name')][c(1:10,17)])
+```
+
+## Understanding Data Table 2 {data-background="images/slide_generic.png"}
+
+<br>
+
+```{r}
+options("kableExtra.html.bsTable" = T)
+kable(data_dictionary[row_dict_vals,c('id','display_name')][c(11:16,18)])
+```
+
+
+## What Determines a "Fit" Person 1 
+
+<br>
+
+```{r, echo=FALSE, warning = FALSE}
+
+suppressMessages(post_psg <- read_excel('datasets/STAGES post sleep questionnaire 2020-09-06 deidentified.xlsx', na = "NA"))
+# remove unrecorded data
+post_psg <- post_psg[-which(is.na(post_psg$modified.date_of_evaluation)),]
+
+post_psg <- post_psg[,c(1,5:7, 9:10)]
+
+first_inner <- merge(SRDBVars, fitness_data,  by.y = 'subject_code', by.x = 's_code')
+second_inner <- merge(post_psg, first_inner,  by.y = 's_code', by.x = 'subject_id')
+
+fitness_data <- second_inner
+
+fitness_data$age[is.na(fitness_data$age)] <- mean(fitness_data$age, na.rm = T)
+
+fitness_data$dem_0800 <- replace_na(fitness_data$dem_0800, mean(fitness_data$dem_0800, na.rm = T))
+
+fitness_data$diet_0400 <- replace_na(fitness_data$diet_0400, mean(fitness_data$diet_0400, na.rm = T))
+
+fitness_data$soclhx_0501 <- replace_na(fitness_data$soclhx_0501, 0)
+
+
+fitness_data$fss_1000 <- replace_na(fitness_data$fss_1000, median(fitness_data$fss_1000, na.rm = T))
+fitness_data$fss_1000[fitness_data$fss_1000 <= 36] <- 0 
+fitness_data$fss_1000[fitness_data$fss_1000 > 36] <- 1 
+#1 means fatigued
+
+names(which(colSums(is.na(fitness_data)) > 0))
+```
+
+## What Determines a "Fit" Person 2
+
+<br>
+
+```{r, echo = TRUE}
+### <b>
+fitness_data$gad_0800 <- replace_na(fitness_data$gad_0800, median(fitness_data$gad_0800, 
+                                                                  na.rm = T))
+fitness_data$gad_0800[fitness_data$gad_0800 < 10] <- 0 
+fitness_data$gad_0800[fitness_data$gad_0800 >= 10] <- 1 
+# 1 means anxious
+
+fitness_data$diet_0700 <- replace_na(fitness_data$diet_0700, median(fitness_data$diet_0700, 
+                                                                    na.rm = T))
+fitness_data$diet_0700[fitness_data$diet_0700 != 0] <- 4 
+fitness_data$diet_0700[fitness_data$diet_0700 == 0] <- 1 
+fitness_data$diet_0700[fitness_data$diet_0700 == 4] <- 0 
+# 1 means unhealthy
+
+fitness_data$famhx_0700 <- replace_na(fitness_data$famhx_0700, 0)
+fitness_data$famhx_0700[fitness_data$famhx_0700 == -55] <- 0 
+### </b>
+
+```
+
+## What Determines a "Fit" Person 3
+
+<br>
+
+```{r, echo = TRUE}
+
+### <b>
+fitness_data$narc_1600 <- replace_na(fitness_data$narc_1600, 0)
+fitness_data$narc_1600[fitness_data$narc_1600 <= 3] <- 0 
+fitness_data$narc_1600[fitness_data$narc_1600 >= 3] <- 1 
+#If muscle weak occurs 
+
+fitness_data$soclhx_0900 <- replace_na(fitness_data$soclhx_0900, 
+                                       median(fitness_data$soclhx_0900, na.rm = T))
+fitness_data$soclhx_0900[fitness_data$soclhx_0900 <= 2] <- 0 
+fitness_data$soclhx_0900[fitness_data$soclhx_0900 >= 1] <- 1 
+#caffeine
+
+
+fitness_data$soclhx_0700 <- replace_na(fitness_data$soclhx_0700, 0)
+#Number of alcoholic drink frequency
+
+
+#fitness_data$soclhx_1320 <- replace_na(fitness_data$soclhx_1320, 0)
+#cigarettes
+
+fitness_data$soclhx_1500 <- replace_na(fitness_data$soclhx_1500, 0)
+fitness_data$soclhx_1500[fitness_data$soclhx_1500 >= 1] <- 1 
+# Drug usage, 1 = drug user if ever used drugs
+
+### </b>
+```
+
+
+```{r, warning = FALSE, cache=FALSE, echo = FALSE, output = FALSE,message=FALSE,echo=FALSE, results='hide'}
+fitness_data$phq_1000 <- replace_na(fitness_data$phq_1000, median(fitness_data$phq_1000, na.rm = T))
+fitness_data$phq_1000[fitness_data$phq_1000 < 10] <- 0 
+fitness_data$phq_1000[fitness_data$phq_1000 >= 10] <- 1 
+# 1 means depressed
+
+fitness_data$diet_0340 <- replace_na(fitness_data$diet_0340, 0)
+fitness_data$diet_0340[fitness_data$diet_0340 < 1] <- 0 
+fitness_data$diet_0340[fitness_data$diet_0340 > 1] <- 1 
+#1 means no regular meal intake
+
+
+fitness_data$bmi <- replace_na(fitness_data$bmi, mean(fitness_data$bmi, na.rm = T))
+
+
+fitness_data$awakenings_compared_to_usual[is.na(fitness_data$awakenings_compared_to_usual)] <- 'same'
+fitness_data$ess_0900 <- replace_na(fitness_data$ess_0900, 0)
+fitness_data$compared_usual_feel_upon_awakening[is.na(fitness_data$compared_usual_feel_upon_awakening)] <- 'same'
+
+#length(fitness_data$dem_0500[fitness_data$dem_0500 == ""])
+# 18 unrecorded, assigning to M
+fitness_data$dem_0500[fitness_data$dem_0500 == ""] <- "M"
+
+fitness_data$nose_0500 <- replace_na(fitness_data$nose_0500,0)
+fitness_data$nose_0500[fitness_data$nose_0500 < 2 ] <- 0
+fitness_data$nose_0500[fitness_data$nose_0500 >= 2 ] <- 1
+#1 means cant breathe
+
+fitness_data$nose_0300 <- replace_na(fitness_data$nose_0300,0)
+fitness_data$nose_0300[fitness_data$nose_0300 < 2 ] <- 0
+fitness_data$nose_0300[fitness_data$nose_0300 >= 2 ] <- 1
+
+#1 means cant breathe/difficulty
+
+```
+
+```{r, warning = FALSE, cache=FALSE, echo = FALSE, output = FALSE,message=FALSE,echo=FALSE, results='hide'}
+#self-reported data
+suppressMessages(sleep_diary <- read_excel('/cloud/project/fa21-prj-mgarbus2-mjshen3-sarahxy2/datasets/STAGES Sleep Diary 2021-04-04 deidentified.xlsx', na = "NA"))
+sleep_diary <- sleep_diary[,c(1:11)]
+sleep_quality_exercise <- sleep_diary |>
+ na.omit() |>
+ group_by(quality_of_sleep) |>
+  count(modified.exercise_yesyeserday_yes_no)
+kable(sleep_quality_exercise)  
+
+# Making bar plot for self-reported data
+ggplot(sleep_quality_exercise, aes(x = quality_of_sleep, y = n, fill = modified.exercise_yesyeserday_yes_no, label = n)) +
+  geom_bar(stat = "identity") +
+  xlab("Quality of Sleep") +
+  ylab("Observations") +
+  labs(fill = "Exercise")
+  geom_text(size = 3, position = position_stack(vjust = 0.5))
+
+
+```
+
+```{r, echo=FALSE}
+suppressMessages(post_psg <- read_excel('datasets/STAGES post sleep questionnaire 2020-09-06 deidentified.xlsx', na = "NA"))
+# remove unrecorded data
+post_psg <- post_psg[-which(is.na(post_psg$modified.date_of_evaluation)),]
+lapply(post_psg, function(x) sum(is.na(x))) #na values
+library(dplyr)
+#Can be graphed
+
+post_psg |>
+  group_by(awaken_how_many_times_during_night) |>
+  summarize(count = n())
+median(post_psg$awaken_how_many_times_during_night, na.rm = T) #Assign 3 to medium value
+#replace NA values with median, "3"
+post_psg$awaken_how_many_times_during_night[is.na(post_psg$awaken_how_many_times_during_night)] <- median(post_psg$awaken_how_many_times_during_night, na.rm = T) 
+post_psg$awaken_how_many_times_during_night[post_psg$awaken_how_many_times_during_night == '1_to_2'] <- "2"
+
+kable(table(post_psg$awaken_how_many_times_during_night))
+#View(post_psg)
+```
+
+```{r, echo=FALSE}
+#Feature generation
+
+mean(fitness_data$age,na.rm = T)
+median(fitness_data$age,na.rm = T)
+#Average age is 45.7886, median is 46.
+#7 hours needed: https://www.cdc.gov/sleep/about_sleep/how_much_sleep.html
+fitness_data$better_than_avg_sleep <- as.numeric(fitness_data$sleep_time > mean(fitness_data$sleep_time))
+#Drop people who have NA in awakenings instead of assign to "same" in case
+
+# A good sleeper has an Above average sleep time, Epsworth Sleep Scale below 16, 
+#meaning not severe excessive daytime sleepiness, 
+#compared_usual_feel_upon_awakening same or more rested, less or same # of awakenings,  
+
+
+fitness_data$good_sleeper <- as.numeric(fitness_data$compared_usual_feel_upon_awakening %in% c('same','more_rested') & fitness_data$ess_0900 <= 16 & fitness_data$awakenings_compared_to_usual %in% c('same', 'less') & fitness_data$better_than_avg_sleep == 1)
+
+sum(fitness_data$good_sleeper)
+#529 "good sleepers" in this dataset!
+```
+
+```{r fig.width=3, fig.height=5, echo=FALSE}
+par(mfrow = c(3,3))
+# Change csv file into a data table to manipulate
+data <- data.table::fread("/cloud/project/fa21-prj-mgarbus2-mjshen3-sarahxy2/datasets/PSGKeyVariables.csv")
+
+# Manipulating the data table
+# Removing the 7 most sleeps out of 1687 observations and then filtering out all outliers
+data1 <- data[!(sleep_time>35000), ]
+data2 <- data[!sleep_time %in% boxplot.stats(sleep_time)$out]
+
+# Graphing boxplot to get an idea of the range and distribution of data
+ggplot(data2, aes(y = sleep_time)) + geom_boxplot()
+
+# Corresponding bar plot that will be used to separate sleep_time into categories
+ggplot(data2, aes(x = sleep_time)) + geom_bar(aes(fill = ..x..)) + scale_x_binned(n.breaks = 10) +
+  xlab("Sleep Time") + ylab("Observations") + scale_fill_gradient2(low='white', mid='orange', high='blue', name = "Sleep Time")
+summary(data2$sleep_time)
+
+# Ranking sleep_time as a categorical variable from the 10 bins, 
+#1 being the worst sleep quality and 10 being the best sleep quality
+brk <- c(0, 9000, 12000, 15000, 18000, 21000, 24000, 27000, 30000, 33000, Inf)
+data2[, category := cut(sleep_time, breaks = brk, include.lowest = TRUE, 
+                        labels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"))]
+```
+
+
+```{r, echo=FALSE}
+fitness_data_table <- as.data.table(fitness_data)
+```
+
+<br>
+
+
+## What Determines "Quality" Sleep  {data-background="images/slide_generic.png"}
+
+- The Polysomnography file measured many variables, amongst which was the total amount of sleep time (sleep_time) of each participant 
+- A good sleeper has: 
+  * an above average sleep time (measured variables)
+  * Epworth Sleep Scale below 16, meaning not severe excessive daytime sleepiness (subjective variable)
+  * Felt more rested or the same as usual from polysomnography test (subjective variable)
+  * less or same number of awakenings (measured variable)
+
+```{r}
+fitness_data$good_sleeper <- as.numeric(fitness_data$compared_usual_feel_upon_awakening %in% c('same','more_rested') & fitness_data$ess_0900 <= 16 & fitness_data$awakenings_compared_to_usual %in% c('same', 'less') & fitness_data$better_than_avg_sleep == 1)
+```
+
+## Data Wrangling  {data-background="images/slide_generic.png"}
+
+<br>
+
+- A good sleeper will have on average $117$ minutes of more sleep than a poor sleeper
+
+```{r}
+fitness_data_table[, .(avg_sleep_time = mean(sleep_time, na.rm = TRUE), count = length(sleep_time)), by = good_sleeper]
+```
+
+- We can oddly see that those who felt more rested on Polysomnography test slept for less amount of time (minutes)
+
+```{r}
+fitness_data_table[, .(avg_sleep_time = mean(sleep_time, na.rm = TRUE), count = length(sleep_time)), 
+                   by = compared_usual_feel_upon_awakening][order(avg_sleep_time)]
+```
+
+## Visualizations
+
+Visualizations were created through R's default plot() function and the ggplot2 package
+
+```{r}
+  ggplot(data=na.omit(fitness_data),
+         mapping=aes(x=bmi,y=sleep_time)) + 
+	    facet_wrap(~ compared_usual_feel_upon_awakening, nrow = 1) +
+    geom_point() +
+    geom_smooth(method = "lm", formula=y~x, colour="blue", se=FALSE) +
+    xlab("Body Mass Index") +
+    ylab("Sleep Time (Minutes))")
+
+```
+
+
+## Visualizations
+
+Visualizations were created through R's default plot() function and the ggplot2 package
+
+```{r}
+ggplot(sleep_quality_exercise, aes(x = quality_of_sleep, y = n, fill = modified.exercise_yesyeserday_yes_no, label = n)) +
+  geom_bar(stat = "identity") +
+  xlab("Quality of Sleep") +
+  ylab("Observations") +
+  labs(fill = "Exercise")
+  geom_text(size = 3, position = position_stack(vjust = 0.5))
+```
+
+
+## Modeling  {data-background="images/slide_generic.png"}
+
+<br>
+
+- The first model we attempted was an extreme gradient boosted tree model from the XGBoost package. A boosted tree is a decision tree that achieves a high modelling accuracy by training new models to account for the training data that was previously incorrectly modeled.
+- According to our XGB model, BMI, Epworth Sleepiness Scale, and the alcohol consumption are the predictors that provided the most gain to the model. It has an accuracy of $60.34\%$, a specificity (true negative classification) of $37.82\%$, and a sensitivity (true positive classification) of $45\%$.
+
+
+## Modeling  {data-background="images/slide_generic.png"}
+
+<br>
+
+- The second model we used is K-nearest-neighbors. K nearest neighbors is a simple algorithm which searches for the closest (by distance) K neighbors to an observation for classification. 
+- Unfortunately, we are unable to determine feature importance from this model. It had an accuracy of $58.01\%$, a sensitivity of $38.39\%$, and a specificity of $43.14\%$.
+
+
+## Modeling  {data-background="images/slide_generic.png"}
+
+<br>
+
+
+- The third model that we used is an elastic-net model. Elastic-net combines the strengths of the Ridge model, which is able to shrink down the coefficients of parameters to make them insignificant, and the LASSO model, which is able to completely remove parameters from the model.
+- The elastic-net model achieved an accuracy of $60.12\%$ the specificity (true negative classification) of $43.24\%$, and a sensitivity (true positive classification), at around $42.73\%$
+- According to the elastic-net model, the most significant predictors for a good sleeper are self perception of weight, family history of chronic fatigue, and caffeine consumption. Interestingly, the amount of exercise was deemed to be useless.
+
+
+## Conclusion & Takeaways  {data-background="images/slide_generic.png"}
+
+<br>
+
+- In the real world, datasets are not always “perfect” and much pre-cleaning needs to be done before it can be used for data analysis and modeling
+- According to the data and our models, sleep and fitness have a less significant relationship than expected. However, this could also be due to how we defined someone who is fit and someone who is a good sleeper. Later studies should investigate this further.
+- Despite finding data that was collected in a controlled environment, it is difficult to fully understand the scope and meaning of data without qualitative characteristics and context, and even more so with poor labeling and recording.
+
+
+## Acknowledgements {data-background="images/slide_generic.png"}
+
+<br>
+
+This research has been conducted using the STAGES - Stanford Technology, Analytics and Genomics in Sleep Resource funded by the Klarman Family Foundation. The investigators of the STAGES study contributed to the design and implementation of the STAGES cohort and/or provided data and/or collected biospecimens, but did not necessarily participate in the analysis or writing of this report. The full list of STAGES investigators can be found at the project website. 
+
+
+The National Sleep Research Resource was supported by the U.S. National Institutes of Health, National Heart Lung and Blood Institute (R24 HL114473, 75N92019R002).
+
+
+##  {data-background="images/Thank You.png" data-background-size=cover .flexbox.vcenter}
+<div class="left">
+<p style="font-size:300%; color:White ">
+   Thank You!
+</p>
+</div>
